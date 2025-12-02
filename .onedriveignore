@@ -1,0 +1,8 @@
+# Exclude Next.js build directory from OneDrive sync
+# This prevents file system virtualization issues
+.next/
+node_modules/
+*.log
+.env.local
+.env*.local
+
