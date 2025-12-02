@@ -30,7 +30,7 @@ Then edit `.env.local` and add your AI.ML credentials:
 
 ```env
 AIML_API_KEY=your_aiml_api_key_here
-AIML_BASE_URL=https://api.aimlapi.com/v1
+AIML_BASE_URL=your_base_url
 AIML_MODEL=your_model
 ```
 
