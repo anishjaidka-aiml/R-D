@@ -6,13 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:parsers": "tsx test-output-parsers.ts"
   },
   "dependencies": {
     "@langchain/community": "^0.0.45",
     "@langchain/core": "^0.1.50",
     "@langchain/openai": "^0.0.28",
     "axios": "^1.6.8",
+    "cheerio": "^1.1.2",
+    "chromadb": "^3.1.6",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "crypto-js": "^4.2.0",
@@ -20,7 +23,9 @@
     "googleapis": "^126.0.1",
     "langchain": "^0.1.30",
     "lucide-react": "^0.344.0",
+    "mammoth": "^1.11.0",
     "next": "^14.2.0",
+    "pdf-parse": "^1.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "reactflow": "^11.11.0",

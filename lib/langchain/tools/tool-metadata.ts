@@ -16,6 +16,7 @@ export const ALL_TOOL_NAMES = [
   'http_request',
   'search_web',
   'calculator',
+  'query_documents', // RAG tool for document querying
 ] as const;
 
 /**
@@ -51,6 +52,12 @@ export const TOOL_METADATA = {
     icon: '🔢',
     description: 'Perform mathematical calculations',
     category: 'Utility',
+  },
+  query_documents: {
+    name: 'Query Documents (RAG)',
+    icon: '📚',
+    description: 'Search and query uploaded documents using RAG',
+    category: 'Information',
   },
 } as const;
 

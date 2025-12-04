@@ -12,6 +12,7 @@ import { gmailTool } from './gmail-tool';
 import { httpTool } from './http-tool';
 import { searchTool } from './search-tool';
 import { calculatorTool } from './calculator-tool';
+import { ragTool } from './rag-tool';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 
 // Re-export metadata for convenience (but prefer tool-metadata.ts for client components)
@@ -26,6 +27,7 @@ export const ALL_TOOLS: Record<string, DynamicStructuredTool> = {
   http_request: httpTool,
   search_web: searchTool,
   calculator: calculatorTool,
+  query_documents: ragTool, // RAG tool for document querying
 };
 
 /**

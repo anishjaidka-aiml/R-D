@@ -6,7 +6,7 @@
 
 'use client';
 
-import { Play, Brain, Zap, Wrench, GitBranch, Code } from 'lucide-react';
+import { Play, Brain, Zap, Wrench, GitBranch, Code, Link2, Network, Route, Users } from 'lucide-react';
 import { NodeType } from '@/types/workflow';
 
 interface NodePaletteProps {
@@ -55,6 +55,34 @@ const nodeTypes = [
     icon: Code,
     color: 'bg-pink-500',
     description: 'Transform data',
+  },
+  {
+    type: 'llm_chain' as NodeType,
+    label: 'LLM Chain',
+    icon: Link2,
+    color: 'bg-indigo-500',
+    description: 'Prompt template → LLM',
+  },
+  {
+    type: 'sequential_chain' as NodeType,
+    label: 'Sequential Chain',
+    icon: Network,
+    color: 'bg-teal-500',
+    description: 'Chain multiple LLM calls',
+  },
+  {
+    type: 'router_chain' as NodeType,
+    label: 'Router Chain',
+    icon: Route,
+    color: 'bg-cyan-500',
+    description: 'Route to different chains',
+  },
+  {
+    type: 'multi_agent' as NodeType,
+    label: 'Multi-Agent',
+    icon: Users,
+    color: 'bg-violet-500',
+    description: 'Multiple agents working together',
   },
 ];
 

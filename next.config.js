@@ -11,15 +11,36 @@ const nextConfig = {
       http2: false, // http2 is Node.js-only
     };
 
-    // Mark googleapis as external to prevent client-side bundling
-    // (it uses Node.js-only modules like http2)
+    // Mark googleapis and chromadb as external to prevent client-side bundling
+    // (they use Node.js-only modules)
     if (!isServer) {
       config.resolve.alias = {
         ...config.resolve.alias,
         'googleapis': false,
         'googleapis-common': false,
+        'chromadb': false,
+        '@chroma-core/default-embed': false,
+        'pdf-parse': false,
       };
     }
+
+    // Mark problematic packages as external for server-side too (prevents bundling issues)
+    config.externals = config.externals || [];
+    if (typeof config.externals === 'function') {
+      const originalExternals = config.externals;
+      config.externals = [
+        ...(Array.isArray(originalExternals) ? originalExternals : []),
+        'chromadb',
+        '@chroma-core/default-embed',
+        'pdf-parse',
+      ];
+    } else if (Array.isArray(config.externals)) {
+      config.externals.push('chromadb', '@chroma-core/default-embed', 'pdf-parse');
+    }
+    
+    // Ignore pdf-parse's problematic file access during build
+    config.resolve.alias = config.resolve.alias || {};
+    config.resolve.alias['pdf-parse/lib/pdf.js'] = false;
 
     return config;
   },

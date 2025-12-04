@@ -22,6 +22,16 @@ export interface ToolDefinition {
 }
 
 /**
+ * Output parser configuration
+ */
+export interface OutputParserConfig {
+  type?: 'none' | 'json' | 'structured';
+  schema?: Record<string, any>; // For structured parser
+  autoFix?: boolean; // Auto-fix malformed outputs
+  maxRetries?: number; // Max retries for fixing
+}
+
+/**
  * Agent configuration
  */
 export interface AgentConfig {
@@ -33,6 +43,7 @@ export interface AgentConfig {
   systemPrompt?: string;
   tools: string[]; // Tool names to make available
   memory?: MemoryConfig;
+  outputParser?: OutputParserConfig; // Output parser configuration
 }
 
 /**
@@ -55,6 +66,7 @@ export interface AgentExecutionResult {
   error?: string;
   executionTime: number;
   conversationId?: string; // For conversational agents
+  parsedOutput?: any; // Parsed structured output (if parser was used)
 }
 
 /**

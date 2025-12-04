@@ -10,6 +10,10 @@ import { executeConversationalAgent } from './langchain/agent-manual';
 import { generateConversationId } from './langchain/memory-manager';
 import { aimlModel } from './langchain/client';
 import { resolveVariables, resolveVariablesInObject } from './variable-resolver';
+import { executeLLMChain, LLMChainConfig } from './langchain/chains/llm-chain';
+import { executeSequentialChain, SequentialChainConfig } from './langchain/chains/sequential-chain';
+import { executeRouterChain, RouterChainConfig } from './langchain/chains/router-chain';
+import { executeMultiAgent } from './langchain/agents/multi-agent-executor';
 
 export class WorkflowExecutor {
   private workflow: Workflow;
@@ -111,6 +115,18 @@ export class WorkflowExecutor {
         case 'llm':
           output = await this.executeLLMNode(node);
           break;
+        case 'llm_chain':
+          output = await this.executeLLMChainNode(node);
+          break;
+        case 'sequential_chain':
+          output = await this.executeSequentialChainNode(node);
+          break;
+        case 'router_chain':
+          output = await this.executeRouterChainNode(node);
+          break;
+        case 'multi_agent':
+          output = await this.executeMultiAgentNode(node);
+          break;
         case 'condition':
           output = await this.executeCondition(node);
           break;
@@ -125,9 +141,11 @@ export class WorkflowExecutor {
 
       // Store output in context
       this.context[node.id] = output;
-      // Also store by node label for easier reference
-      const labelKey = node.data.label.toLowerCase().replace(/\s+/g, '_');
-      this.context[labelKey] = output;
+      // Also store by node label for easier reference (if label exists)
+      if (node.data.label) {
+        const labelKey = node.data.label.toLowerCase().replace(/\s+/g, '_');
+        this.context[labelKey] = output;
+      }
 
       console.log(`  ✅ Node completed in ${log.duration}ms`);
       console.log(`     Output:`, JSON.stringify(output).substring(0, 100) + '...');
@@ -260,6 +278,181 @@ export class WorkflowExecutor {
   }
 
   /**
+   * Execute LLM Chain node
+   */
+  private async executeLLMChainNode(node: WorkflowNode): Promise<any> {
+    const config = node.data.config;
+
+    // Resolve variables in prompt template
+    const promptTemplate = resolveVariables(config.promptTemplate || '', this.context);
+    
+    // Build variables object from config and context
+    const variables: Record<string, any> = {};
+    if (config.variables) {
+      for (const [key, value] of Object.entries(config.variables)) {
+        variables[key] = resolveVariables(String(value), this.context);
+      }
+    }
+    // Also include context variables
+    Object.assign(variables, this.context);
+
+    console.log(`     LLM Chain prompt template: ${promptTemplate.substring(0, 100)}...`);
+    console.log(`     Variables:`, variables);
+
+    const chainConfig: LLMChainConfig = {
+      prompt: promptTemplate,
+      variables,
+      temperature: config.temperature,
+      modelName: config.modelName,
+      maxTokens: config.maxTokens,
+    };
+
+    const result = await executeLLMChain(chainConfig);
+
+    return {
+      output: result.output,
+      variables: result.variables,
+      chainType: 'llm_chain',
+    };
+  }
+
+  /**
+   * Execute Sequential Chain node
+   */
+  private async executeSequentialChainNode(node: WorkflowNode): Promise<any> {
+    const config = node.data.config;
+
+    console.log(`     Sequential Chain with ${config.steps?.length || 0} steps`);
+
+    // Build steps from config
+    const steps = (config.steps || []).map((step: any) => ({
+      name: step.name || `step_${Math.random().toString(36).substr(2, 9)}`,
+      prompt: resolveVariables(step.prompt || '', this.context),
+      inputVariables: step.inputVariables || [],
+      outputKey: step.outputKey,
+      temperature: step.temperature,
+      modelName: step.modelName,
+    }));
+
+    // Build initial input from config and context
+    const initialInput: Record<string, any> = {};
+    if (config.initialInput) {
+      for (const [key, value] of Object.entries(config.initialInput)) {
+        initialInput[key] = resolveVariables(String(value), this.context);
+      }
+    }
+    // Also include context variables
+    Object.assign(initialInput, this.context);
+
+    const chainConfig: SequentialChainConfig = {
+      steps,
+      initialInput,
+      temperature: config.temperature,
+      modelName: config.modelName,
+    };
+
+    const result = await executeSequentialChain(chainConfig);
+
+    return {
+      output: result.finalOutput,
+      outputs: result.outputs,
+      steps: result.steps,
+      chainType: 'sequential_chain',
+    };
+  }
+
+  /**
+   * Execute Router Chain node
+   */
+  private async executeRouterChainNode(node: WorkflowNode): Promise<any> {
+    const config = node.data.config;
+
+    console.log(`     Router Chain with ${config.destinations?.length || 0} destinations`);
+
+    // Resolve variables in routing prompt
+    const routingPrompt = resolveVariables(config.routingPrompt || '', this.context);
+
+    // Build destinations from config
+    const destinations = (config.destinations || []).map((dest: any) => ({
+      name: dest.name,
+      description: dest.description || '',
+      chainType: dest.chainType || 'llm',
+      chainConfig: dest.chainConfig || {},
+    }));
+
+    // Build input from config and context
+    const input: Record<string, any> = {};
+    if (config.input) {
+      for (const [key, value] of Object.entries(config.input)) {
+        input[key] = resolveVariables(String(value), this.context);
+      }
+    }
+    // Also include context variables
+    Object.assign(input, this.context);
+
+    const chainConfig: RouterChainConfig = {
+      routingPrompt,
+      destinations,
+      defaultDestination: config.defaultDestination,
+      input,
+      temperature: config.temperature,
+      modelName: config.modelName,
+    };
+
+    const result = await executeRouterChain(chainConfig);
+
+    return {
+      output: result.chainResult.output || result.chainResult.finalOutput,
+      selectedDestination: result.selectedDestination,
+      destinationDescription: result.destinationDescription,
+      routingDecision: result.routingDecision,
+      chainResult: result.chainResult,
+      chainType: 'router_chain',
+    };
+  }
+
+  /**
+   * Execute multi-agent node
+   */
+  private async executeMultiAgentNode(node: WorkflowNode): Promise<any> {
+    const config = node.data.config;
+
+    console.log(`     Multi-Agent execution mode: ${config.mode || 'supervised'}`);
+
+    // Resolve variables in task
+    const task = resolveVariables(config.task || '', this.context);
+
+    // Get agent IDs
+    const agentIds = config.agentIds || [];
+
+    // Get shared context
+    const sharedContext = config.sharedContext ? resolveVariablesInObject(config.sharedContext, this.context) : undefined;
+
+    // Build multi-agent config
+    const multiAgentConfig = {
+      mode: config.mode || 'supervised',
+      agentIds: agentIds.length > 0 ? agentIds : undefined,
+      sharedContext,
+      temperature: config.temperature,
+      model: config.model,
+    };
+
+    const result = await executeMultiAgent(task, multiAgentConfig);
+
+    return {
+      output: result.aggregatedOutput,
+      results: result.results,
+      supervisorDecision: result.supervisorDecision,
+      executionId: result.executionId,
+      mode: result.mode,
+      success: result.success,
+      executionTime: result.executionTime,
+      error: result.error,
+      chainType: 'multi_agent',
+    };
+  }
+
+  /**
    * Execute condition node
    */
   private async executeCondition(node: WorkflowNode): Promise<any> {
@@ -326,7 +519,7 @@ export class WorkflowExecutor {
 
     for (const edge of nextEdges) {
       // For condition nodes, only follow the appropriate path
-      if (isCondition && currentOutput?.result !== undefined) {
+      if (isCondition && currentOutput && typeof currentOutput === 'object' && 'result' in currentOutput) {
         const shouldExecute =
           (currentOutput.result && edge.sourceHandle === 'true') ||
           (!currentOutput.result && edge.sourceHandle === 'false');

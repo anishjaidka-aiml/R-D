@@ -53,6 +53,13 @@ export default function HomePage() {
             >
               My Workflows
             </Link>
+            <Link
+              href="/rag"
+              className="px-8 py-4 bg-gradient-to-r from-green-500 to-teal-500 text-white rounded-lg font-semibold hover:from-green-600 hover:to-teal-600 transition-colors shadow-lg hover:shadow-xl flex items-center gap-2"
+            >
+              📚 Document RAG
+              <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">NEW</span>
+            </Link>
           </div>
         </div>
       </div>

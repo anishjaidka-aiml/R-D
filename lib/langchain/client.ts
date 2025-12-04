@@ -1,23 +1,38 @@
 import { ChatOpenAI } from "@langchain/openai";
 
 /**
- * AI.ML LangChain Client Configuration
+ * LLM Client Configuration
  * 
- * This configures LangChain to use your company's AI.ML API
- * as an OpenAI-compatible LLM provider.
+ * Supports:
+ * - OpenAI API (direct)
+ * - Baseten API (OpenAI-compatible, hosts GPT models like GPT-120B)
+ * - AI.ML API (OpenAI-compatible)
+ * 
+ * Priority: OpenAI/Baseten API > AI.ML API
  */
 
-// Validate environment variables
+// Check for OpenAI/Baseten API (priority)
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL; // Required for Baseten, optional for OpenAI
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o"; // Default model (use "openai/gpt-oss-120b" for Baseten)
+
+// Check for AI.ML API (fallback)
 const AIML_API_KEY = process.env.AIML_API_KEY;
 const AIML_BASE_URL = process.env.AIML_BASE_URL || "https://api.aimlapi.com/v1";
 const AIML_MODEL = process.env.AIML_MODEL || "llama-3.3-70b-instruct";
 
-if (!AIML_API_KEY) {
-  console.warn("⚠️  AIML_API_KEY not found in environment variables");
+// Determine which API to use
+const USE_OPENAI = !!OPENAI_API_KEY;
+const USE_AIML = !USE_OPENAI && !!AIML_API_KEY;
+
+if (!OPENAI_API_KEY && !AIML_API_KEY) {
+  console.warn("⚠️  Neither OPENAI_API_KEY nor AIML_API_KEY found in environment variables");
 }
 
 /**
- * Create AI.ML LangChain client
+ * Create LLM client
+ * 
+ * Priority: OpenAI API > AI.ML API
  * 
  * Usage:
  * ```typescript
@@ -25,31 +40,77 @@ if (!AIML_API_KEY) {
  * const response = await aimlModel.invoke("Hello!");
  * ```
  */
-export const aimlModel = new ChatOpenAI({
-  modelName: AIML_MODEL,
-  temperature: 0.7,
-  openAIApiKey: AIML_API_KEY,
-  configuration: {
-    baseURL: AIML_BASE_URL,
-  },
-  verbose: process.env.NODE_ENV === 'development', // Show logs in dev mode
-});
+export const aimlModel = USE_OPENAI
+  ? (() => {
+      const isBaseten = OPENAI_BASE_URL?.includes('baseten.co') || OPENAI_BASE_URL?.includes('inference.baseten');
+      if (isBaseten) {
+        console.log("✅ Using Baseten API for LLM (OpenAI-compatible)");
+        console.log(`   Base URL: ${OPENAI_BASE_URL}`);
+        console.log(`   Model: ${OPENAI_MODEL}`);
+      }
+      return new ChatOpenAI({
+        modelName: OPENAI_MODEL,
+        temperature: 0.7,
+        openAIApiKey: OPENAI_API_KEY,
+        ...(OPENAI_BASE_URL && {
+          configuration: {
+            baseURL: OPENAI_BASE_URL, // Required for Baseten
+          },
+        }),
+        verbose: process.env.NODE_ENV === 'development',
+      });
+    })()
+  : new ChatOpenAI({
+      modelName: AIML_MODEL,
+      temperature: 0.7,
+      openAIApiKey: AIML_API_KEY,
+      configuration: {
+        baseURL: AIML_BASE_URL,
+      },
+      verbose: process.env.NODE_ENV === 'development',
+    });
 
 /**
- * Create a custom AI.ML client with specific configuration
+ * Create a custom LLM client with specific configuration
+ * 
+ * Uses OpenAI API if available, otherwise falls back to AI.ML API
  */
 export function createAIMLClient(config?: {
   temperature?: number;
   modelName?: string;
   maxTokens?: number;
 }) {
+  // Check fresh (not cached)
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const openaiBaseUrl = process.env.OPENAI_BASE_URL;
+  const openaiModel = process.env.OPENAI_MODEL || "gpt-4o";
+  const aimlKey = process.env.AIML_API_KEY;
+  const aimlBaseUrl = process.env.AIML_BASE_URL || "https://api.aimlapi.com/v1";
+  const aimlModel = process.env.AIML_MODEL || "llama-3.3-70b-instruct";
+  
+  if (openaiKey) {
+    const isBaseten = openaiBaseUrl?.includes('baseten.co') || openaiBaseUrl?.includes('inference.baseten');
+    return new ChatOpenAI({
+      modelName: config?.modelName || openaiModel,
+      temperature: config?.temperature ?? 0.7,
+      maxTokens: config?.maxTokens,
+      openAIApiKey: openaiKey,
+      ...(openaiBaseUrl && {
+        configuration: {
+          baseURL: openaiBaseUrl,
+        },
+      }),
+      verbose: process.env.NODE_ENV === 'development',
+    });
+  }
+  
   return new ChatOpenAI({
-    modelName: config?.modelName || AIML_MODEL,
+    modelName: config?.modelName || aimlModel,
     temperature: config?.temperature ?? 0.7,
     maxTokens: config?.maxTokens,
-    openAIApiKey: AIML_API_KEY,
+    openAIApiKey: aimlKey,
     configuration: {
-      baseURL: AIML_BASE_URL,
+      baseURL: aimlBaseUrl,
     },
     verbose: process.env.NODE_ENV === 'development',
   });
@@ -62,29 +123,35 @@ export async function testAIMLConnection(): Promise<{
   success: boolean;
   message: string;
   model?: string;
+  provider?: string;
   response?: string;
 }> {
   try {
-    if (!AIML_API_KEY) {
+    if (!OPENAI_API_KEY && !AIML_API_KEY) {
       return {
         success: false,
-        message: "AIML_API_KEY not configured. Please add it to .env.local",
+        message: "No API key configured. Please add OPENAI_API_KEY or AIML_API_KEY to .env.local",
       };
     }
 
-    console.log("🔄 Testing connection to AI.ML...");
-    console.log(`📍 Base URL: ${AIML_BASE_URL}`);
-    console.log(`🤖 Model: ${AIML_MODEL}`);
+    const provider = USE_OPENAI ? 'OpenAI' : 'AI.ML';
+    const model = USE_OPENAI ? OPENAI_MODEL : AIML_MODEL;
+    const baseUrl = USE_OPENAI ? (OPENAI_BASE_URL || 'https://api.openai.com/v1') : AIML_BASE_URL;
 
-    const response = await aimlModel.invoke("Say 'Hello from AI.ML!' in one short sentence.");
+    console.log(`🔄 Testing connection to ${provider}...`);
+    console.log(`📍 Base URL: ${baseUrl}`);
+    console.log(`🤖 Model: ${model}`);
+
+    const response = await aimlModel.invoke("Say 'Hello!' in one short sentence.");
     
     console.log("✅ Connection successful!");
     console.log(`📝 Response: ${response.content}`);
 
     return {
       success: true,
-      message: "Successfully connected to AI.ML!",
-      model: AIML_MODEL,
+      message: `Successfully connected to ${provider}!`,
+      provider,
+      model,
       response: response.content as string,
     };
   } catch (error: any) {

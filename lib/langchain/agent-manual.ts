@@ -15,6 +15,7 @@ import { getConversationMemory, addToMemory, loadMemory } from "./memory-manager
 import type { BufferMemory, BufferWindowMemory } from "langchain/memory";
 import { CustomCallbackHandler } from "./callbacks/custom-handler";
 import type { CallbackHandler } from "@/types/callbacks";
+import { parseStructuredOutput, parseJSON, getFormatInstructions } from "./parsers";
 
 /**
  * Execute agent using prompt engineering (no function calling needed)
@@ -71,14 +72,31 @@ export async function executeManualAgent(
 
       const response = await llm.invoke(prompt);
       const llmDuration = Date.now() - llmStartTime;
-      const output = String(response.content);
+      const rawOutput = String(response.content);
+
+      // Parse output if parser is configured
+      let parsedOutput: any = undefined;
+      if (config.outputParser && config.outputParser.type !== 'none') {
+        try {
+          if (config.outputParser.type === 'json') {
+            parsedOutput = await parseJSON(rawOutput, config.outputParser.autoFix);
+          } else if (config.outputParser.type === 'structured' && config.outputParser.schema) {
+            parsedOutput = await parseStructuredOutput(rawOutput, {
+              schema: config.outputParser.schema,
+              autoFix: config.outputParser.autoFix,
+            });
+          }
+        } catch (error: any) {
+          console.warn(`   ⚠️  Output parsing failed: ${error.message}`);
+        }
+      }
 
       if (callbackHandler?.handle) {
         await callbackHandler.handle({
           type: 'llm_end',
           timestamp: Date.now(),
           executionId,
-          response: output,
+          response: rawOutput,
           duration: llmDuration,
         });
 
@@ -87,7 +105,7 @@ export async function executeManualAgent(
           timestamp: Date.now(),
           executionId,
           success: true,
-          output,
+          output: rawOutput,
           executionTime: Date.now() - startTime,
           toolCalls: 0,
         });
@@ -97,7 +115,7 @@ export async function executeManualAgent(
           timestamp: Date.now(),
           executionId,
           success: true,
-          output,
+          output: rawOutput,
           totalExecutionTime: Date.now() - startTime,
           totalIterations: 1,
           totalToolCalls: 0,
@@ -106,10 +124,11 @@ export async function executeManualAgent(
 
       return {
         success: true,
-        output,
+        output: rawOutput,
         toolCalls: [],
         reasoning: [],
         executionTime: Date.now() - startTime,
+        parsedOutput,
       };
     }
 
@@ -123,8 +142,37 @@ export async function executeManualAgent(
       return `  - ${name}(${paramList}): ${desc}`;
     }).join('\n');
 
+    // Build output format instructions if parser is configured
+    let outputFormatInstructions = '';
+    if (config.outputParser && config.outputParser.type !== 'none') {
+      if (config.outputParser.type === 'structured' && config.outputParser.schema) {
+        outputFormatInstructions = `\n\nOUTPUT FORMAT:\n${getFormatInstructions({
+          schema: config.outputParser.schema,
+          autoFix: config.outputParser.autoFix,
+        })}\n\nIMPORTANT: Your final answer must follow this format exactly.`;
+      } else if (config.outputParser.type === 'json') {
+        outputFormatInstructions = `\n\nOUTPUT FORMAT:\nYour final answer must be valid JSON. Return only the JSON object, no additional text.\n\nIMPORTANT: Your final answer must be valid JSON.`;
+      }
+    }
+
     // Create system prompt with tool instructions
-    const systemPrompt = `${config.systemPrompt || 'You are a helpful AI assistant.'}
+    const defaultSystemPrompt = config.systemPrompt || 'You are a helpful AI assistant.';
+    
+    // Check if prompt mentions documents or queries - if so, emphasize using query_documents
+    const promptLowerCheck = prompt.toLowerCase();
+    const needsRAG = promptLowerCheck.includes('document') || promptLowerCheck.includes('query') || 
+                     promptLowerCheck.includes('search') || promptLowerCheck.includes('find') ||
+                     tools.some(t => t.name === 'query_documents');
+    
+    const ragInstruction = needsRAG && tools.some(t => t.name === 'query_documents') 
+      ? `\n\nCRITICAL FOR THIS REQUEST: The user is asking about documents. You MUST use the query_documents tool FIRST.
+Format:
+USE_TOOL: query_documents
+PARAMETERS: {"query": "the user's exact question"}
+Then provide FINAL_ANSWER: based on the results.\n`
+      : '';
+    
+    const systemPrompt = `${defaultSystemPrompt}
 
 You have access to these tools:
 ${toolDescriptions}
@@ -136,19 +184,51 @@ IMPORTANT INSTRUCTIONS:
 
 2. I will execute the tool and give you the result
 3. You can then use more tools or give a final answer
-4. When you're ready to give the final answer, start with "FINAL_ANSWER: " followed by your response
+4. When you're ready to give the final answer, start with "FINAL_ANSWER: " followed by your response${outputFormatInstructions}
+${ragInstruction}
+CRITICAL: You MUST use tools when appropriate. Do NOT skip using tools - actually call them!
+If the user asks a question that requires tool usage, you MUST use the tool first before answering.
 
-Example:
-If you need to calculate something, respond with:
+Example for query_documents tool:
+If asked "What is this document about?", respond with:
+USE_TOOL: query_documents
+PARAMETERS: {"query": "What is this document about?"}
+
+Example for calculator tool:
+If asked to calculate, respond with:
 USE_TOOL: calculator
 PARAMETERS: {"expression": "45 * 23"}
 
-Do NOT just describe using the tool - actually request it with the format above!`;
+Do NOT just describe using the tool - actually request it with the format above!
+Do NOT answer without using tools first if tools are available!`;
 
+    // Validate prompt
+    if (!prompt || prompt.trim().length === 0) {
+      throw new Error("Prompt cannot be empty. Please provide a valid prompt.");
+    }
+
+    // For document queries, add explicit instruction as first message
+    const promptLower = prompt.toLowerCase();
+    const isDocumentQuery = promptLower.includes('document') || promptLower.includes('query') || 
+                           promptLower.includes('search') || promptLower.includes('find') ||
+                           (tools.length > 0 && tools.some(t => t.name === 'query_documents'));
+    
     const messages: any[] = [
       new SystemMessage(systemPrompt),
-      new HumanMessage(prompt),
     ];
+    
+    // Add explicit tool usage instruction for document queries
+    if (isDocumentQuery && tools.some(t => t.name === 'query_documents')) {
+      messages.push(new HumanMessage(`IMPORTANT: You MUST use the query_documents tool to answer this question.
+
+Use this EXACT format:
+USE_TOOL: query_documents
+PARAMETERS: {"query": "${prompt.replace(/"/g, '\\"')}"}
+
+Do NOT answer without using the tool first!`));
+    }
+    
+    messages.push(new HumanMessage(prompt));
 
     let iterations = 0;
     const maxIterations = 10;
@@ -157,6 +237,8 @@ Do NOT just describe using the tool - actually request it with the format above!
     let finalOutput = '';
 
     console.log("🔄 Starting agent reasoning loop...");
+    console.log(`   System Prompt: ${systemPrompt.substring(0, 200)}...`);
+    console.log(`   User Prompt: ${prompt}`);
 
     while (iterations < maxIterations) {
       iterations++;
@@ -165,7 +247,30 @@ Do NOT just describe using the tool - actually request it with the format above!
       const response = await llm.invoke(messages);
       const content = String(response.content).trim();
 
-      console.log(`  💬 Agent response: ${content.substring(0, 150)}...`);
+      console.log(`  💬 Agent response (full): ${content}`);
+      console.log(`  💬 Agent response (preview): ${content.substring(0, 300)}...`);
+      
+      // If content is empty, prompt agent again
+      if (!content || content.trim().length === 0) {
+        console.log(`  ⚠️  Empty response from agent, prompting again...`);
+        messages.push(new HumanMessage("Please provide a response. Use a tool or give a final answer."));
+        continue;
+      }
+      
+      // If agent is talking about using tools but not actually calling them, force it
+      if (iterations === 1 && tools.length > 0 && 
+          (content.toLowerCase().includes('i will') || content.toLowerCase().includes('i can') || 
+           content.toLowerCase().includes('let me') || content.toLowerCase().includes('i should')) &&
+          !content.includes('USE_TOOL:')) {
+        console.log(`  ⚠️  Agent is describing tool usage instead of calling tools, prompting...`);
+        messages.push(new AIMessage(content));
+        messages.push(new HumanMessage(`You need to actually CALL the tool, not describe it. Use this format:
+USE_TOOL: ${tools[0].name}
+PARAMETERS: {"query": "${prompt.substring(0, 100)}"}
+
+Do NOT describe - actually call the tool!`));
+        continue;
+      }
 
       // Check if agent wants to use a tool
       if (content.includes('USE_TOOL:') && content.includes('PARAMETERS:')) {
@@ -220,9 +325,21 @@ Do NOT just describe using the tool - actually request it with the format above!
           try {
             const result = await tool.func(params);
             const toolDuration = Date.now() - toolStartTime;
-            const parsedResult = JSON.parse(result);
             
-            console.log(`  ✅ Tool result: ${result.substring(0, 100)}...`);
+            let parsedResult: any = result;
+            if (typeof result === 'string') {
+              try {
+                parsedResult = JSON.parse(result);
+              } catch {
+                parsedResult = result;
+              }
+            }
+            
+            const resultPreview =
+              typeof result === 'string'
+                ? result.substring(0, 100)
+                : JSON.stringify(result).substring(0, 100);
+            console.log(`  ✅ Tool result: ${resultPreview}...`);
 
             // Record tool call
             toolCalls.push({
@@ -257,7 +374,13 @@ Do NOT just describe using the tool - actually request it with the format above!
 
             // Add to conversation
             messages.push(new AIMessage(content));
-            messages.push(new HumanMessage(`TOOL_RESULT: ${result}\n\nYou can now use another tool or give your final answer.`));
+            messages.push(
+              new HumanMessage(
+                `TOOL_RESULT: ${
+                  typeof result === 'string' ? result : JSON.stringify(result)
+                }\n\nYou can now use another tool or give your final answer.`
+              )
+            );
 
             continue;
           } catch (error: any) {
@@ -310,10 +433,83 @@ Do NOT just describe using the tool - actually request it with the format above!
         break;
       }
 
-      // If no tool call and no final answer marker, treat as final answer
-      if (iterations > 1 || !content.includes('USE_TOOL')) {
+      // If we have tools and agent hasn't used them yet, force tool usage
+      if (tools.length > 0 && toolCalls.length === 0 && iterations <= 5) {
+        // Agent should use tools first
+        if (!content.includes('USE_TOOL:')) {
+          console.log(`  ⚠️  Agent hasn't used tools yet (iteration ${iterations}), forcing tool usage...`);
+          messages.push(new AIMessage(content));
+          
+          // Determine which tool to suggest
+          const suggestedTool = tools.find(t => t.name === 'query_documents') || tools[0];
+          
+          // Extract the actual question from prompt
+          let question = prompt;
+          if (prompt.includes('asking:')) {
+            const match = prompt.match(/asking:\s*(.+?)(?:\n|$)/i);
+            if (match) question = match[1].trim();
+          }
+          
+          const toolExample = suggestedTool.name === 'query_documents' 
+            ? `USE_TOOL: query_documents\nPARAMETERS: {"query": "${question.replace(/"/g, '\\"')}"}`
+            : `USE_TOOL: ${suggestedTool.name}\nPARAMETERS: {}`;
+          
+          messages.push(new HumanMessage(`STOP! You MUST use a tool before answering.
+
+You have NOT used any tools yet. You MUST call a tool first.
+
+Copy and use this EXACT format:
+${toolExample}
+
+Do NOT write anything else - just use the tool format above!`));
+          continue;
+        }
+      }
+      
+      // If still no tools after 5 iterations, try to extract and use tool directly
+      if (tools.length > 0 && toolCalls.length === 0 && iterations === 5) {
+        console.log(`  🔧 Last resort: Attempting to extract query and call tool directly...`);
+        const suggestedTool = tools.find(t => t.name === 'query_documents');
+        if (suggestedTool) {
+          // Extract question from prompt
+          let question = prompt;
+          if (prompt.includes('asking:')) {
+            const match = prompt.match(/asking:\s*([^\n]+)/i);
+            if (match) question = match[1].trim();
+          } else {
+            question = prompt.substring(0, 200);
+          }
+          
+          console.log(`  🔧 Directly calling query_documents with: "${question}"`);
+          
+          try {
+            const toolResult = await suggestedTool.func({ query: question });
+            const parsedResult = typeof toolResult === 'string' ? JSON.parse(toolResult) : toolResult;
+            
+            toolCalls.push({
+              toolName: 'query_documents',
+              parameters: { query: question },
+              result: parsedResult,
+              timestamp: new Date().toISOString(),
+            });
+            
+            messages.push(new HumanMessage(`I called the query_documents tool for you. Here are the results:
+
+${toolResult}
+
+Now provide your FINAL_ANSWER: based on these results.`));
+            continue;
+          } catch (error: any) {
+            console.error(`  ❌ Direct tool call failed:`, error);
+          }
+        }
+      }
+
+      // If no tool call and no final answer marker after several iterations, treat as final answer
+      if (iterations >= 3 && !content.includes('USE_TOOL:') && !content.includes('FINAL_ANSWER:')) {
+        // Only treat as final answer if we've given the agent multiple chances
         finalOutput = content;
-        console.log(`  🎯 Treating as final answer`);
+        console.log(`  🎯 Treating as final answer after ${iterations} iterations`);
         
         if (callbackHandler?.handle) {
           await callbackHandler.handle({
@@ -334,15 +530,71 @@ Do NOT just describe using the tool - actually request it with the format above!
 
     console.log(`\n✅ Agent completed after ${iterations} iterations`);
     console.log(`   Tools used: ${toolCalls.length}`);
-    console.log(`   Final output: ${finalOutput.substring(0, 100)}...`);
+    
+    // If we have tool calls but no final output, try to extract answer from last response
+    if (!finalOutput && toolCalls.length > 0 && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage instanceof AIMessage) {
+        const lastContent = String(lastMessage.content).trim();
+        // Try to extract any meaningful content
+        if (lastContent && lastContent.length > 10) {
+          // Remove tool call markers and get the rest
+          const cleaned = lastContent
+            .replace(/USE_TOOL:[\s\S]*?PARAMETERS:[\s\S]*?(?=\n|$)/g, '')
+            .replace(/FINAL_ANSWER:\s*/i, '')
+            .trim();
+          if (cleaned.length > 10) {
+            finalOutput = cleaned;
+            console.log(`  ✅ Extracted output from last message: ${finalOutput.substring(0, 100)}...`);
+          }
+        }
+      }
+    }
+    
+    // If still no output, check if agent gave a response without FINAL_ANSWER marker
+    if (!finalOutput && messages.length > 1) {
+      const lastAIMessage = [...messages].reverse().find(msg => msg instanceof AIMessage);
+      if (lastAIMessage) {
+        const content = String(lastAIMessage.content).trim();
+        // If it doesn't contain tool calls and is substantial, use it as output
+        if (!content.includes('USE_TOOL:') && content.length > 20) {
+          finalOutput = content;
+          console.log(`  ✅ Using agent response as output: ${finalOutput.substring(0, 100)}...`);
+        }
+      }
+    }
+    
+    console.log(`   Final output: ${finalOutput ? finalOutput.substring(0, 100) + '...' : 'NONE'}`);
 
     const executionTime = Date.now() - startTime;
-    const result = {
+    const rawOutput = finalOutput || `Agent completed but no output generated after ${iterations} iterations. Check server logs for agent responses. Prompt: "${prompt.substring(0, 100)}..."`;
+    
+    // Parse output if parser is configured
+    let parsedOutput: any = undefined;
+    if (config.outputParser && config.outputParser.type !== 'none') {
+      try {
+        if (config.outputParser.type === 'json') {
+          parsedOutput = await parseJSON(rawOutput, config.outputParser.autoFix);
+        } else if (config.outputParser.type === 'structured' && config.outputParser.schema) {
+          parsedOutput = await parseStructuredOutput(rawOutput, {
+            schema: config.outputParser.schema,
+            autoFix: config.outputParser.autoFix,
+          });
+        }
+        console.log(`   ✅ Parsed output:`, parsedOutput);
+      } catch (error: any) {
+        console.warn(`   ⚠️  Output parsing failed: ${error.message}`);
+        // Continue with raw output if parsing fails
+      }
+    }
+
+    const result: AgentExecutionResult = {
       success: true,
-      output: finalOutput || "Agent completed but no output generated",
+      output: rawOutput,
       reasoning,
       toolCalls,
       executionTime,
+      parsedOutput,
     };
 
     // Emit completion callbacks
@@ -526,14 +778,32 @@ Remember: You can refer to previous messages in this conversation. The user expe
 
       const response = await llm.invoke(messages);
       const llmDuration = Date.now() - llmStartTime;
-      finalOutput = String(response.content);
+      const rawOutput = String(response.content);
+      finalOutput = rawOutput;
+
+      // Parse output if parser is configured
+      let parsedOutput: any = undefined;
+      if (config.outputParser && config.outputParser.type !== 'none') {
+        try {
+          if (config.outputParser.type === 'json') {
+            parsedOutput = await parseJSON(rawOutput, config.outputParser.autoFix);
+          } else if (config.outputParser.type === 'structured' && config.outputParser.schema) {
+            parsedOutput = await parseStructuredOutput(rawOutput, {
+              schema: config.outputParser.schema,
+              autoFix: config.outputParser.autoFix,
+            });
+          }
+        } catch (error: any) {
+          console.warn(`   ⚠️  Output parsing failed: ${error.message}`);
+        }
+      }
       
       if (callbackHandler?.handle) {
         await callbackHandler.handle({
           type: 'llm_end',
           timestamp: Date.now(),
           executionId,
-          response: finalOutput,
+          response: rawOutput,
           duration: llmDuration,
         });
 
@@ -542,7 +812,7 @@ Remember: You can refer to previous messages in this conversation. The user expe
           timestamp: Date.now(),
           executionId,
           success: true,
-          output: finalOutput,
+          output: rawOutput,
           executionTime: Date.now() - startTime,
           toolCalls: 0,
         });
@@ -552,7 +822,7 @@ Remember: You can refer to previous messages in this conversation. The user expe
           timestamp: Date.now(),
           executionId,
           success: true,
-          output: finalOutput,
+          output: rawOutput,
           totalExecutionTime: Date.now() - startTime,
           totalIterations: 1,
           totalToolCalls: 0,
@@ -562,18 +832,19 @@ Remember: You can refer to previous messages in this conversation. The user expe
       // Save to memory
       await memory.saveContext(
         { input: prompt },
-        { output: finalOutput }
+        { output: rawOutput }
       );
       
       console.log(`✅ Response generated and saved to memory`);
       
       return {
         success: true,
-        output: finalOutput,
+        output: rawOutput,
         toolCalls: [],
         reasoning: [],
         executionTime: Date.now() - startTime,
         conversationId,
+        parsedOutput,
       };
     }
 
@@ -788,13 +1059,34 @@ Remember: You can refer to previous messages in this conversation. The user expe
     console.log(`   Final output: ${finalOutput.substring(0, 100)}...`);
 
     const executionTime = Date.now() - startTime;
-    const result = {
+    const rawOutput = finalOutput || "Agent completed but no output generated";
+    
+    // Parse output if parser is configured
+    let parsedOutput: any = undefined;
+    if (config.outputParser && config.outputParser.type !== 'none') {
+      try {
+        if (config.outputParser.type === 'json') {
+          parsedOutput = await parseJSON(rawOutput, config.outputParser.autoFix);
+        } else if (config.outputParser.type === 'structured' && config.outputParser.schema) {
+          parsedOutput = await parseStructuredOutput(rawOutput, {
+            schema: config.outputParser.schema,
+            autoFix: config.outputParser.autoFix,
+          });
+        }
+        console.log(`   ✅ Parsed output:`, parsedOutput);
+      } catch (error: any) {
+        console.warn(`   ⚠️  Output parsing failed: ${error.message}`);
+      }
+    }
+
+    const result: AgentExecutionResult = {
       success: true,
-      output: finalOutput || "Agent completed but no output generated",
+      output: rawOutput,
       reasoning,
       toolCalls,
       executionTime,
       conversationId,
+      parsedOutput,
     };
 
     // Emit completion callbacks

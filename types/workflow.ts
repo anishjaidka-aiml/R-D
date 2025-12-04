@@ -4,7 +4,7 @@
  * Type definitions for visual workflows
  */
 
-export type NodeType = 'trigger' | 'agent' | 'llm' | 'tool' | 'condition' | 'transform';
+export type NodeType = 'trigger' | 'agent' | 'llm' | 'tool' | 'condition' | 'transform' | 'llm_chain' | 'sequential_chain' | 'router_chain' | 'multi_agent';
 
 /**
  * Node data stored in each workflow node

@@ -8,7 +8,7 @@
 
 import { memo } from 'react';
 import { Handle, Position, NodeProps, useReactFlow } from 'reactflow';
-import { Play, Brain, Zap, Wrench, GitBranch, Code, X } from 'lucide-react';
+import { Play, Brain, Zap, Wrench, GitBranch, Code, X, Link2, Network, Route, Users } from 'lucide-react';
 import { NodeData } from '@/types/workflow';
 
 // Icon mapping for different node types
@@ -19,6 +19,10 @@ const iconMap = {
   tool: Wrench,
   condition: GitBranch,
   transform: Code,
+  llm_chain: Link2,
+  sequential_chain: Network,
+  router_chain: Route,
+  multi_agent: Users,
 };
 
 // Color mapping for different node types
@@ -29,6 +33,10 @@ const colorMap = {
   tool: 'bg-orange-500',
   condition: 'bg-yellow-500',
   transform: 'bg-pink-500',
+  llm_chain: 'bg-indigo-500',
+  sequential_chain: 'bg-teal-500',
+  router_chain: 'bg-cyan-500',
+  multi_agent: 'bg-violet-500',
 };
 
 function CustomNode({ id, data, selected }: NodeProps<NodeData>) {
