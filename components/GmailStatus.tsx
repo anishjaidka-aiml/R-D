@@ -1,14 +1,21 @@
 /**
  * Gmail Status Component
- * 
+ *
  * Reusable component to display Gmail connection status
  */
 
-'use client';
+"use client";
 
-import { useState, useEffect } from 'react';
-import { Mail, CheckCircle, XCircle, AlertCircle, Loader, RefreshCw } from 'lucide-react';
-import Link from 'next/link';
+import { useState, useEffect } from "react";
+import {
+  Mail,
+  CheckCircle,
+  XCircle,
+  AlertCircle,
+  Loader,
+  RefreshCw,
+} from "lucide-react";
+import Link from "next/link";
 
 interface GmailStatusData {
   connected: boolean;
@@ -25,11 +32,11 @@ interface GmailStatusProps {
   onStatusChange?: (status: GmailStatusData) => void;
 }
 
-export default function GmailStatus({ 
-  userId, 
-  showActions = true, 
+export default function GmailStatus({
+  userId,
+  showActions = true,
   compact = false,
-  onStatusChange 
+  onStatusChange,
 }: GmailStatusProps) {
   const [status, setStatus] = useState<GmailStatusData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -39,20 +46,27 @@ export default function GmailStatus({
   const fetchStatus = async () => {
     try {
       setError(null);
-      const targetUserId = userId || 'default';
-      const response = await fetch(`/api/auth/gmail/status?userId=${encodeURIComponent(targetUserId)}`);
-      
+      setLoading(true);
+
+      // If a userId is provided, pass it through.
+      // If not, let the backend decide its “default” behaviour.
+      const query = userId ? `?userId=${encodeURIComponent(userId)}` : "";
+      const response = await fetch(`/api/ucs/gmail/status${query}`, {
+        cache: "no-store",
+      });
+
       if (!response.ok) {
-        throw new Error('Failed to fetch Gmail status');
+        throw new Error("Failed to fetch Gmail status");
       }
 
       const data = await response.json();
       setStatus(data);
+
       if (onStatusChange) {
         onStatusChange(data);
       }
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || "Unknown error");
       setStatus(null);
     } finally {
       setLoading(false);
@@ -62,28 +76,41 @@ export default function GmailStatus({
 
   useEffect(() => {
     fetchStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
   const handleConnect = () => {
-    window.location.href = '/api/auth/gmail';
+    // Keep using your existing auth route for starting OAuth
+    window.location.href = "/api/auth/gmail";
   };
 
   const handleDisconnect = async () => {
     if (!status?.email) return;
-    
-    if (!confirm(`Are you sure you want to disconnect Gmail for ${status.email}?`)) {
+
+    if (
+      !confirm(
+        `Are you sure you want to disconnect Gmail for ${status.email}?`
+      )
+    ) {
       return;
     }
 
     try {
-      const response = await fetch(`/api/auth/gmail/disconnect?userId=${encodeURIComponent(status.email)}`, {
-        method: 'DELETE',
-      });
+      // Use the UCS bridge for disconnect so everything goes through UCS
+      const response = await fetch(
+        `/api/ucs/gmail/disconnect?userId=${encodeURIComponent(
+          status.email
+        )}`,
+        {
+          method: "DELETE",
+        }
+      );
 
       if (response.ok) {
         await fetchStatus();
       } else {
-        throw new Error('Failed to disconnect');
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body?.message || "Failed to disconnect");
       }
     } catch (err: any) {
       alert(`Failed to disconnect: ${err.message}`);
@@ -125,7 +152,8 @@ export default function GmailStatus({
     return null;
   }
 
-  const isConnected = status.connected && status.valid && !status.needsReauthentication;
+  const isConnected =
+    status.connected && status.valid && !status.needsReauthentication;
   const isExpired = status.connected && status.needsReauthentication;
   const isNotConnected = !status.connected;
 
@@ -151,13 +179,15 @@ export default function GmailStatus({
   return (
     <div className="space-y-3">
       {/* Status Display */}
-      <div className={`p-4 rounded-lg border ${
-        isConnected 
-          ? 'bg-green-50 border-green-200' 
-          : isExpired
-          ? 'bg-yellow-50 border-yellow-200'
-          : 'bg-gray-50 border-gray-200'
-      }`}>
+      <div
+        className={`p-4 rounded-lg border ${
+          isConnected
+            ? "bg-green-50 border-green-200"
+            : isExpired
+            ? "bg-yellow-50 border-yellow-200"
+            : "bg-gray-50 border-gray-200"
+        }`}
+      >
         <div className="flex items-start justify-between">
           <div className="flex items-start gap-3">
             {isConnected ? (
@@ -170,11 +200,9 @@ export default function GmailStatus({
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
                 <Mail className="w-4 h-4" />
-                <h3 className="font-semibold text-sm">
-                  Gmail Connection
-                </h3>
+                <h3 className="font-semibold text-sm">Gmail Connection</h3>
               </div>
-              
+
               {isConnected && status.email && (
                 <>
                   <p className="text-sm text-gray-700 mb-1">
@@ -182,7 +210,8 @@ export default function GmailStatus({
                   </p>
                   {status.expiresAt && (
                     <p className="text-xs text-gray-600">
-                      Token expires: {new Date(status.expiresAt).toLocaleString()}
+                      Token expires:{" "}
+                      {new Date(status.expiresAt).toLocaleString()}
                     </p>
                   )}
                 </>
@@ -196,7 +225,8 @@ export default function GmailStatus({
 
               {isNotConnected && (
                 <p className="text-sm text-gray-600">
-                  Gmail is not connected. Connect to enable Gmail tool in workflows.
+                  Gmail is not connected. Connect to enable Gmail tool in
+                  workflows.
                 </p>
               )}
             </div>
@@ -209,7 +239,9 @@ export default function GmailStatus({
               className="p-1 hover:bg-white/50 rounded transition-colors"
               title="Refresh status"
             >
-              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              <RefreshCw
+                className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`}
+              />
             </button>
           )}
         </div>
@@ -264,5 +296,3 @@ export default function GmailStatus({
     </div>
   );
 }
-
-
