@@ -269,7 +269,14 @@ export class WorkflowExecutor {
     console.log(`     LLM prompt: ${prompt.substring(0, 100)}...`);
 
     // Call LLM
-    const response = await aimlModel.invoke(prompt);
+    // ✅ SAFETY CHECK: Fixes "aimlModel is possibly null" error
+if (!aimlModel) {
+  throw new Error("AI model is not initialized. Check your langchain config.");
+}
+
+// Call LLM
+const response = await aimlModel.invoke(prompt);
+
 
     return {
       output: response.content,

@@ -1,197 +1,118 @@
 /**
- * Gmail OAuth Token Storage
- * 
- * Secure storage for Gmail OAuth tokens with encryption
- * Uses JSON file storage (similar to workflows)
+ * Gmail OAuth Token Storage (UCS-backed)
+ *
+ * Instead of JSON file storage, this version stores
+ * and reads tokens from the UCS tables:
+ *   - external_accounts
+ *   - provider_tokens
  */
 
-import fs from 'fs/promises';
-import path from 'path';
-import CryptoJS from 'crypto-js';
+import { query } from "@/lib/db";
+import {
+  getCredential,
+  upsertCredential,
+  deleteCredential,
+} from "@/lib/ucs/credentials";
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const TOKENS_FILE = path.join(DATA_DIR, 'gmail-tokens.json');
-
-/**
- * Token data structure
- */
 export interface GmailTokenData {
-  userId: string; // Email address or user identifier
-  accessToken: string; // Encrypted
-  refreshToken: string; // Encrypted
-  expiresAt: number; // Unix timestamp
-  createdAt: number; // Unix timestamp
-  updatedAt: number; // Unix timestamp
+  userId: string;        // app user id
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;     // Unix ms timestamp
+  createdAt: number;     // Unix ms timestamp
+  updatedAt: number;     // Unix ms timestamp
 }
 
 /**
- * Stored token structure (with encrypted tokens)
- */
-interface StoredTokenData {
-  userId: string;
-  encryptedAccessToken: string;
-  encryptedRefreshToken: string;
-  expiresAt: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/**
- * Get encryption key from environment
- */
-function getEncryptionKey(): string {
-  const key = process.env.OAUTH_ENCRYPTION_KEY;
-  if (!key) {
-    throw new Error('OAUTH_ENCRYPTION_KEY is not set in environment variables');
-  }
-  return key;
-}
-
-/**
- * Encrypt a string
- */
-function encrypt(text: string): string {
-  const key = getEncryptionKey();
-  return CryptoJS.AES.encrypt(text, key).toString();
-}
-
-/**
- * Decrypt a string
- */
-function decrypt(encryptedText: string): string {
-  const key = getEncryptionKey();
-  const bytes = CryptoJS.AES.decrypt(encryptedText, key);
-  return bytes.toString(CryptoJS.enc.Utf8);
-}
-
-/**
- * Ensure data directory exists
- */
-async function ensureDataDir(): Promise<void> {
-  try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-  } catch (error) {
-    // Directory already exists
-  }
-}
-
-/**
- * Read all tokens from storage
- */
-async function readTokens(): Promise<StoredTokenData[]> {
-  try {
-    await ensureDataDir();
-    const data = await fs.readFile(TOKENS_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch (error) {
-    // File doesn't exist or is invalid
-    return [];
-  }
-}
-
-/**
- * Write tokens to storage
- */
-async function writeTokens(tokens: StoredTokenData[]): Promise<void> {
-  await ensureDataDir();
-  await fs.writeFile(TOKENS_FILE, JSON.stringify(tokens, null, 2));
-}
-
-/**
- * Save or update a token
+ * Save or update Gmail token for a user in UCS.
+ * Used after initial OAuth or after refresh.
  */
 export async function saveToken(tokenData: GmailTokenData): Promise<void> {
-  const tokens = await readTokens();
-  
-  // Encrypt tokens before storing
-  const storedToken: StoredTokenData = {
+  // Try to reuse existing external account info (email, provider_user_id, scopes)
+  const existing = await getCredential(tokenData.userId, "gmail");
+
+  const providerUserId =
+    existing?.providerUserId ?? tokenData.userId; // fallback if we don't have it
+  const username = existing?.username ?? null;
+  const email = existing?.email ?? null;
+  const scopes = existing?.scopes ?? null;
+
+  await upsertCredential({
     userId: tokenData.userId,
-    encryptedAccessToken: encrypt(tokenData.accessToken),
-    encryptedRefreshToken: encrypt(tokenData.refreshToken),
-    expiresAt: tokenData.expiresAt,
-    createdAt: tokenData.createdAt || Date.now(),
-    updatedAt: Date.now(),
-  };
-
-  // Check if token already exists for this user
-  const existingIndex = tokens.findIndex(t => t.userId === tokenData.userId);
-  
-  if (existingIndex >= 0) {
-    // Update existing token
-    tokens[existingIndex] = storedToken;
-  } else {
-    // Add new token
-    tokens.push(storedToken);
-  }
-
-  await writeTokens(tokens);
+    provider: "gmail",
+    providerUserId,
+    username,
+    email,
+    accessToken: tokenData.accessToken,
+    refreshToken: tokenData.refreshToken,
+    expiresAt: new Date(tokenData.expiresAt),
+    scopes,
+  });
 }
 
 /**
- * Get token for a user
+ * Get Gmail token for a user from UCS.
+ * Flows should use this to configure the Gmail client.
  */
-export async function getToken(userId: string): Promise<GmailTokenData | null> {
-  const tokens = await readTokens();
-  const storedToken = tokens.find(t => t.userId === userId);
-  
-  if (!storedToken) {
-    return null;
-  }
+export async function getToken(
+  userId: string
+): Promise<GmailTokenData | null> {
+  const cred = await getCredential(userId, "gmail");
+  if (!cred || !cred.accessToken) return null;
 
-  try {
-    // Decrypt tokens
-    return {
-      userId: storedToken.userId,
-      accessToken: decrypt(storedToken.encryptedAccessToken),
-      refreshToken: decrypt(storedToken.encryptedRefreshToken),
-      expiresAt: storedToken.expiresAt,
-      createdAt: storedToken.createdAt,
-      updatedAt: storedToken.updatedAt,
-    };
-  } catch (error) {
-    console.error('Failed to decrypt token:', error);
-    return null;
-  }
+  const now = Date.now();
+  const expiresAt = cred.expiresAt
+    ? new Date(cred.expiresAt).getTime()
+    : now + 30 * 60 * 1000; // default: 30min ahead if missing
+
+  return {
+    userId,
+    accessToken: cred.accessToken,
+    refreshToken: cred.refreshToken ?? "",
+    expiresAt,
+    createdAt: now, // not tracked in UCS; fine for flows
+    updatedAt: now,
+  };
 }
 
 /**
- * Delete token for a user
+ * Delete Gmail token + external account for a user from UCS.
  */
 export async function deleteToken(userId: string): Promise<void> {
-  const tokens = await readTokens();
-  const filteredTokens = tokens.filter(t => t.userId !== userId);
-  await writeTokens(filteredTokens);
+  await deleteCredential(userId, "gmail");
 }
 
 /**
- * Check if token exists and is valid (not expired)
+ * Check if token exists and is valid (not expired with 5m buffer)
  */
 export async function hasValidToken(userId: string): Promise<boolean> {
   const token = await getToken(userId);
-  if (!token) {
-    return false;
-  }
-  
-  // Check if token is expired (with 5 minute buffer)
+  if (!token) return false;
+
   const now = Date.now();
   const buffer = 5 * 60 * 1000; // 5 minutes
-  return token.expiresAt > (now + buffer);
+  return token.expiresAt > now + buffer;
 }
 
 /**
- * Get all user IDs with stored tokens
+ * Get all app user IDs that have a Gmail credential stored in UCS.
  */
 export async function getAllUserIds(): Promise<string[]> {
-  const tokens = await readTokens();
-  return tokens.map(t => t.userId);
+  const res = await query<{ user_id: string }>(
+    `
+    SELECT DISTINCT user_id
+    FROM external_accounts
+    WHERE provider = 'gmail';
+    `
+  );
+  return res.rows.map((r) => r.user_id);
 }
 
 /**
- * Check if token is expired
+ * Check if token is expired (with 5 minute buffer)
  */
 export function isTokenExpired(token: GmailTokenData): boolean {
   const now = Date.now();
-  const buffer = 5 * 60 * 1000; // 5 minutes buffer
-  return token.expiresAt <= (now + buffer);
+  const buffer = 5 * 60 * 1000;
+  return token.expiresAt <= now + buffer;
 }
-
